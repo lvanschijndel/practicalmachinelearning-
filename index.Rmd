@@ -1,0 +1,177 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Luc van Schijndel"
+date: "24 August 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Summary
+
+This report is the submission of Luc van Schijndel for the course project of
+the 'Practical Machine Learning' course by John Hopkins University on Coursera.
+
+The objective is to accurately predict the way in which a subject is performing
+an excersise based on data from accelerometers on the belt, forearm, arm, and
+dumbell. 
+A random forest model was trained on a dataset containing 75% of the available
+data. This was subsequently validated against a testing dataset containing the
+remaining 25% of the data to estimate the out of model accuracy. As the results
+were satisfactory, no further tuning was performed.
+
+# Main report.
+
+## Introduction.
+
+The data from this model comes from the Human Activity Recognition
+'Weight Lifting Exercises Dataset', which can be retrieved at the following link:
+http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+
+Six participants were asked to perform barbell lifts in five different ways:
+-according to the specification (Class A)
+-throwing the elbows to the front (Class B)
+-lifting the dumbbell only halfway (Class C)
+-lowering the dumbbell only halfway (Class D)
+-throwing the hips to the front (Class E).
+
+The goal is to use data from accelerometers on the belt, forearm, arm, and
+dumbell to assess in which way a participant is performing the excersise.
+
+## Load data
+
+The first step is to download the training and testing dataset from the web.
+Subsequently, the files are read through the read.csv function with default
+options.
+
+```{r downloaddata, cache = TRUE}
+if(!file.exists("pml-training.csv")){
+        download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", "pml-training.csv")
+}
+
+if(!file.exists("pml-testing.csv")){
+        download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", "pml-testing.csv")
+}
+
+traindata <- read.csv("pml-training.csv")
+
+testdata <- read.csv("pml-testing.csv")
+
+```
+## Partition data into a training and validation dataset
+
+The next step is to split the training dataset in a training and testing dataset.
+As the dataset is very large, we assign 75% percent or approximately 15,000
+observations to the training set, leaving the testing dataset with a healthy
+5,000 cases.
+
+
+```{r partitiondata}
+library(caret)
+set.seed(92748)
+inTrain <‐ createDataPartition(y=traindata$classe,
+p=0.75, list=FALSE)
+training <‐ traindata[inTrain,]
+testing <‐ traindata[‐inTrain,]
+```
+
+
+## Selecting predictors
+
+Here, we look to define what columns to include in the prediction models.
+
+There is a 'new_window' column in the dataset, which is a factor with levels
+"yes" and "no". Many columns only have data entries for those rows where
+"new_window" equals "yes". These appear to be summary variables for an interval.
+
+Our assessment is that we are looking to determine correctness 'in the moment',
+and therefore we choose not to use the columns only populated for the interval
+summaries.
+
+Some of these columns contain NAs for the missing data, allowing them to be
+filtered out easily. The other columns contain blanks. These columns we filter
+out by hand.
+
+Last but not least, the dataset starts with a number of columns that will lead
+to a really good fit for the testing set, but will not yield any predictive
+capacity. These are the row names, timestaps and window numbers. Since the
+subjects will have performed the excersises in a certain order, the time
+variable in the training set will predict the outcome very well - but this will
+not be transferrable to other settings. Thus, we omit these.
+
+The most difficult column is the 'user_name'. There could be characteristics
+specific to each person for that allow a prediction. This would require
+re-training the algorithm if it is to be applied to a new person. Since we
+interpret the assignment to be the development of a generic model, we choose to
+remove 'user_name' from the dataset for training purposes.
+
+```{r removeNAcolumns}
+nacount <-sapply(training, function(y) sum(length(which(is.na(y)))))
+nacount <- data.frame(nacount)
+coltoremove <- nacount$nacount > 0
+traintrim <- training[,!coltoremove]
+traintrim2 <- traintrim[,c(8:11,21:42,49:51,61:73,83:93)]
+```
+
+## Training Random forest algorithm
+
+Pre-reading informed us about the computational requirements for fitting a
+random forest model. Therefore, we used parallell computing and changed from
+the default model of bootstrapping to 5-fold cross validation as recommended
+by Leonard Greski in 
+https://github.com/lgreski/datasciencectacontent/blob/master/markdown/pml-randomForestPerformance.md
+.
+
+```{r randomforest, cache = TRUE}
+
+# set up training run for x / y syntax because model format performs poorly
+x <- traintrim2[,-53]
+y <- traintrim2[,53]
+
+library(parallel)
+library(doParallel)
+cluster <- makeCluster(detectCores() - 1) # convention to leave 1 core for OS
+registerDoParallel(cluster)
+
+fitControl <- trainControl(method = "cv",
+                           number = 5,
+                           allowParallel = TRUE)
+set.seed(648836)
+rffit <- train(x,y, method="rf",trControl = fitControl)
+
+stopCluster(cluster)
+registerDoSEQ()
+rffit
+trainresults <- predict(rffit)==traintrim2$classe
+rfinmodelacc <- sum(trainresults)/length(trainresults)
+
+```
+
+The accuracy of the model on the training dataset is `r rfinmodelacc`, thus the
+in sample error rate is `r 1 - rfinmodelacc`. This is deemed sufficient to
+progress and test the model on the testing dataset.
+
+## Applying model to the testing dataset
+
+In one of the first steps, 25% of the downloaded training dataset was set aside
+for model testing. We apply the created model to this dataset to assess the
+out of sample error rate. We trim the testing dataset in the same fashion
+as the training dataset to ensure the right variables are used.
+
+```{r testrfmodel}
+colselect <- names(traintrim2)
+testtrim <- testing[,colselect]
+testresults <- predict(rffit, newdata = testtrim)==testtrim$classe
+rfoutmodelacc <- sum(testresults)/length(testresults)
+```
+
+The accuracy achieved on the testing dataset is `r rfoutmodelacc`,
+which is deemed sufficient. Thus, the out of model accuracy is 
+`r 1- rfoutmodelacc`. As no tuning is done on the testing dataset, the
+accuracy in predicting the 20 unknown test cases should be similar to the
+accuracy on the testing dataset, assuming that the testing set is representative
+for the 20 unknown cases. When the unknown cases differ from the training set -
+for example if different subjects performed the excersises - the accuracy will
+be less.
